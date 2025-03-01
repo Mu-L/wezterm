@@ -1,6 +1,14 @@
+---
+tags:
+  - multiplexing
+---
 # `default_domain = "local"`
 
 {{since('20220319-142410-0fcdea07')}}
+
+!!! note
+    This option only applies to the GUI.  For the equivalent option in
+    the standalone mux server, see [default_mux_server_domain](default_mux_server_domain.md)
 
 When starting the GUI (not using the `serial` or `connect` subcommands), by default wezterm will set the built-in `"local"` domain as the default multiplexing domain.
 

@@ -1,4 +1,19 @@
+---
+tags:
+  - font
+keywords:
+  - ligature
+  - font
+---
+
 ### Advanced Font Shaping Options
+
+Font shaping is the process which expands font ligatures and applies other
+advanced font display features that are encoded in your chosen font, in
+order to correctly position and display the appropriate glyphs on your display.
+
+The [HarfBuzz](https://harfbuzz.github.io/) library is used to perform
+font shaping.
 
 The `harfbuzz_features` option allows specifying the features to enable when
 using harfbuzz for font shaping.
@@ -31,7 +46,7 @@ it lists available stylistic sets here:
 and you can set them in wezterm:
 
 ```lua
--- Use this for a zero with a dot rather than a line through it
+-- Use this for a zero with a line through it rather than a dot
 -- when using the Fira Code font
 config.harfbuzz_features = { 'zero' }
 ```

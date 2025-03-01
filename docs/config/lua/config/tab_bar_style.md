@@ -1,3 +1,7 @@
+---
+tags:
+  - tab_bar
+---
 # `tab_bar_style`
 
 {{since('20210814-124438-54e29167')}}
@@ -15,7 +19,7 @@ have been removed and replaced by the more flexible
 {{since('20210314-114017-04b7cedd')}}
 
 This config option allows styling the elements that appear in the tab bar.
-This configuration supplements the [tab bar color](../../appearance.md#tab-bar-appearance--colors)
+This configuration supplements the [tab bar color](../../appearance.md#tab-bar-appearance-colors)
 options.
 
 Styling in this context refers to how the edges of the tabs and the new tab button are rendered.
@@ -39,6 +43,8 @@ This example changes the tab edges to the PowerLine arrow symbols:
 
 ```lua
 local wezterm = require 'wezterm'
+
+local config = wezterm.config_builder()
 
 -- The filled in variant of the < symbol
 local SOLID_LEFT_ARROW = wezterm.nerdfonts.pl_right_hard_divider
@@ -69,4 +75,16 @@ config.tab_bar_style = {
   },
 }
 ```
+
+#### Retro Tab Bar with Integrated Window Management Buttons
+
+{{since('20230408-112425-69ae8472')}}
+
+When using [`window_decorations =
+"INTEGRATED_BUTTONS|RESIZE"`](window_decorations.md), you can
+control how the different buttons are drawn for the retro tab bar:
+
+* `window_hide`, `window_hide_hover` - the minimize/hide button
+* `window_maximize`, `window_maximize_hover` - the maximize button
+* `window_close`, `window_close_hover` - the close button
 

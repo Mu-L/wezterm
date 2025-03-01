@@ -1,3 +1,8 @@
+---
+tags:
+  - keys
+  - appearance
+---
 # `ime_preedit_rendering`
 
 {{since('20220624-141144-bd1b7c5d')}}
@@ -22,7 +27,7 @@ WezTerm supports the following IME preedit rendering.
   to avoid the truncated displaying of IME preedit
   but has a worse look and feel compared to "Builtin" rendering.
 
-You can control IME preedit rendering in your configuraiton file:
+You can control IME preedit rendering in your configuration file:
 
 ```lua
 config.ime_preedit_rendering = 'System'

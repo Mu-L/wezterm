@@ -2,12 +2,12 @@ use crate::quad::Vertex;
 use anyhow::anyhow;
 use config::{ConfigHandle, GpuInfo, WebGpuPowerPreference};
 use std::cell::RefCell;
-use std::num::NonZeroU32;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use window::bitmaps::Texture2d;
 use window::raw_window_handle::{
-    HasRawDisplayHandle, HasRawWindowHandle, RawDisplayHandle, RawWindowHandle,
+    DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawDisplayHandle,
+    RawWindowHandle, WindowHandle,
 };
 use window::{BitmapImage, Dimensions, Rect, Window};
 
@@ -23,7 +23,8 @@ pub struct ShaderUniform {
 
 pub struct WebGpuState {
     pub adapter_info: wgpu::AdapterInfo,
-    pub surface: wgpu::Surface,
+    pub downlevel_caps: wgpu::DownlevelCapabilities,
+    pub surface: wgpu::Surface<'static>,
     pub device: wgpu::Device,
     pub queue: Arc<wgpu::Queue>,
     pub config: RefCell<wgpu::SurfaceConfiguration>,
@@ -44,21 +45,21 @@ pub struct RawHandlePair {
 impl RawHandlePair {
     fn new(window: &Window) -> Self {
         Self {
-            window: window.raw_window_handle(),
-            display: window.raw_display_handle(),
+            window: window.window_handle().expect("window handle").as_raw(),
+            display: window.display_handle().expect("display handle").as_raw(),
         }
     }
 }
 
-unsafe impl HasRawWindowHandle for RawHandlePair {
-    fn raw_window_handle(&self) -> RawWindowHandle {
-        self.window
+impl HasWindowHandle for RawHandlePair {
+    fn window_handle(&self) -> Result<WindowHandle, HandleError> {
+        unsafe { Ok(WindowHandle::borrow_raw(self.window)) }
     }
 }
 
-unsafe impl HasRawDisplayHandle for RawHandlePair {
-    fn raw_display_handle(&self) -> RawDisplayHandle {
-        self.display
+impl HasDisplayHandle for RawHandlePair {
+    fn display_handle(&self) -> Result<DisplayHandle, HandleError> {
+        unsafe { Ok(DisplayHandle::borrow_raw(self.display)) }
     }
 }
 
@@ -81,7 +82,7 @@ impl Texture2d for WebGpuTexture {
         let (im_width, im_height) = im.image_dimensions();
 
         self.queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &self.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d {
@@ -92,10 +93,10 @@ impl Texture2d for WebGpuTexture {
                 aspect: wgpu::TextureAspect::All,
             },
             im.pixel_data_slice(),
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: NonZeroU32::new(im_width as u32 * 4),
-                rows_per_image: NonZeroU32::new(im_height as u32),
+                bytes_per_row: Some(im_width as u32 * 4),
+                rows_per_image: Some(im_height as u32),
             },
             wgpu::Extent3d {
                 width: im_width as u32,
@@ -119,8 +120,31 @@ impl Texture2d for WebGpuTexture {
 }
 
 impl WebGpuTexture {
-    pub fn new(width: u32, height: u32, state: &WebGpuState) -> Self {
+    pub fn new(width: u32, height: u32, state: &WebGpuState) -> anyhow::Result<Self> {
+        let limit = state.device.limits().max_texture_dimension_2d;
+
+        if width > limit || height > limit {
+            // Ideally, wgpu would have a fallible create_texture method,
+            // but it doesn't: instead it will panic if the requested
+            // dimension is too large.
+            // So we check the limit ourselves here.
+            // <https://github.com/wezterm/wezterm/issues/3713>
+            anyhow::bail!(
+                "texture dimensions {width}x{height} exceeed the \
+                 max dimension {limit} supported by your GPU"
+            );
+        }
+
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let view_formats = if state
+            .downlevel_caps
+            .flags
+            .contains(wgpu::DownlevelFlags::SURFACE_VIEW_FORMATS)
+        {
+            vec![format, format.remove_srgb_suffix()]
+        } else {
+            vec![]
+        };
         let texture = state.device.create_texture(&wgpu::TextureDescriptor {
             size: wgpu::Extent3d {
                 width,
@@ -133,14 +157,14 @@ impl WebGpuTexture {
             format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             label: Some("Texture Atlas"),
-            view_formats: &[format, format.remove_srgb_suffix()],
+            view_formats: &view_formats,
         });
-        Self {
+        Ok(Self {
             texture,
             width,
             height,
             queue: Arc::clone(&state.queue),
-        }
+        })
     }
 }
 
@@ -171,6 +195,7 @@ fn compute_compatibility_list(
 ) -> Vec<String> {
     instance
         .enumerate_adapters(backends)
+        .into_iter()
         .map(|a| {
             let info = adapter_info_to_gpu_info(a.get_info());
             let compatible = a.is_surface_supported(&surface);
@@ -199,11 +224,13 @@ impl WebGpuState {
         config: &ConfigHandle,
     ) -> anyhow::Result<Self> {
         let backends = wgpu::Backends::all();
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends,
             ..Default::default()
         });
-        let surface = unsafe { instance.create_surface(&handle)? };
+        let surface = unsafe {
+            instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::from_window(&handle)?)?
+        };
 
         let mut adapter: Option<wgpu::Adapter> = None;
 
@@ -287,19 +314,23 @@ impl WebGpuState {
         log::trace!("Using adapter: {adapter_info:?}");
         let caps = surface.get_capabilities(&adapter);
         log::trace!("caps: {caps:?}");
+        let downlevel_caps = adapter.get_downlevel_capabilities();
+        log::trace!("downlevel_caps: {downlevel_caps:?}");
 
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
-                    features: wgpu::Features::empty(),
+                    required_features: wgpu::Features::empty(),
                     // WebGL doesn't support all of wgpu's features, so if
                     // we're building for the web we'll have to disable some.
-                    limits: if cfg!(target_arch = "wasm32") {
+                    required_limits: if cfg!(target_arch = "wasm32") {
                         wgpu::Limits::downlevel_webgl2_defaults()
                     } else {
-                        wgpu::Limits::default()
-                    },
+                        wgpu::Limits::downlevel_defaults()
+                    }
+                    .using_resolution(adapter.limits()),
                     label: None,
+                    memory_hints: Default::default(),
                 },
                 None, // Trace path
             )
@@ -315,6 +346,19 @@ impl WebGpuState {
             caps.formats[0]
         };
 
+        // Need to check that this is supported, as trying to set
+        // view_formats without it will cause surface.configure
+        // to panic
+        // <https://github.com/wezterm/wezterm/issues/3565>
+        let view_formats = if downlevel_caps
+            .flags
+            .contains(wgpu::DownlevelFlags::SURFACE_VIEW_FORMATS)
+        {
+            vec![format.add_srgb_suffix(), format.remove_srgb_suffix()]
+        } else {
+            vec![]
+        };
+
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -326,10 +370,16 @@ impl WebGpuState {
                 .contains(&wgpu::CompositeAlphaMode::PostMultiplied)
             {
                 wgpu::CompositeAlphaMode::PostMultiplied
+            } else if caps
+                .alpha_modes
+                .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
+            {
+                wgpu::CompositeAlphaMode::PreMultiplied
             } else {
                 wgpu::CompositeAlphaMode::Auto
             },
-            view_formats: vec![format.add_srgb_suffix(), format.remove_srgb_suffix()],
+            view_formats,
+            desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &config);
 
@@ -408,17 +458,19 @@ impl WebGpuState {
             layout: Some(&render_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs_main",
+                entry_point: Some("vs_main"),
                 buffers: &[Vertex::desc()],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs_main",
+                entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: config.format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
 
             primitive: wgpu::PrimitiveState {
@@ -437,10 +489,12 @@ impl WebGpuState {
                 alpha_to_coverage_enabled: false,
             },
             multiview: None,
+            cache: None,
         });
 
         Ok(Self {
             adapter_info,
+            downlevel_caps,
             surface,
             device,
             queue,
@@ -483,7 +537,7 @@ impl WebGpuState {
             #[cfg(windows)]
             RawWindowHandle::Win32(h) => {
                 let mut rect = unsafe { std::mem::zeroed() };
-                unsafe { winapi::um::winuser::GetClientRect(h.hwnd as _, &mut rect) };
+                unsafe { winapi::um::winuser::GetClientRect(h.hwnd.get() as _, &mut rect) };
                 dims.pixel_width = (rect.right - rect.left) as usize;
                 dims.pixel_height = (rect.bottom - rect.top) as usize;
             }
@@ -500,7 +554,7 @@ impl WebGpuState {
         if config.width > 0 && config.height > 0 {
             // Avoid reconfiguring with a 0 sized surface, as webgpu will
             // panic in that case
-            // <https://github.com/wez/wezterm/issues/2881>
+            // <https://github.com/wezterm/wezterm/issues/2881>
             self.surface.configure(&self.device, &config);
         }
     }

@@ -1,11 +1,11 @@
 //! Handling hyperlinks.
 //! This gist describes an escape sequence for explicitly managing hyperlinks:
-//! <https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5fedaA>
+//! <https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda>
 //! We use that as the foundation of our hyperlink support, and the game
 //! plan is to then implicitly enable the hyperlink attribute for a cell
 //! as we recognize linkable input text during print() processing.
 use crate::{ensure, format_err, Result};
-use regex::{Captures, Regex};
+use fancy_regex::{Captures, Regex};
 #[cfg(feature = "use_serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
@@ -244,7 +244,7 @@ impl<'t> Match<'t> {
         c0.start()..c0.end()
     }
 
-    fn highlight(&self) -> Option<regex::Match> {
+    fn highlight(&self) -> Option<fancy_regex::Match> {
         self.captures.get(self.rule.highlight)
     }
 
@@ -265,6 +265,9 @@ impl<'t> Match<'t> {
         result
     }
 }
+pub const CLOSING_PARENTHESIS_HYPERLINK_PATTERN: &str =
+    r"\b\w+://[^\s()]*\(\S*\)(?=\s|$|[^_/a-zA-Z0-9-])";
+pub const GENERIC_HYPERLINK_PATTERN: &str = r"\b\w+://\S+[_/a-zA-Z0-9-]";
 
 impl Rule {
     /// Construct a new rule.  It may fail if the regex is invalid.
@@ -285,10 +288,12 @@ impl Rule {
     pub fn match_hyperlinks(line: &str, rules: &[Rule]) -> Vec<RuleMatch> {
         let mut matches = Vec::new();
         for rule in rules.iter() {
-            for captures in rule.regex.captures_iter(line) {
-                let m = Match { rule, captures };
-                if m.highlight().is_some() {
-                    matches.push(m);
+            for capture_result in rule.regex.captures_iter(line) {
+                if let Ok(captures) = capture_result {
+                    let m = Match { rule, captures };
+                    if m.highlight().is_some() {
+                        matches.push(m);
+                    }
                 }
             }
         }
@@ -343,6 +348,53 @@ mod test {
                     link: Arc::new(Hyperlink::new_implicit("mailto:foo@example.com")),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn parse_with_parentheses() {
+        fn assert_helper(test_uri: &str, expected_uri: &str, msg: &str) {
+            let rules = vec![
+                Rule::new(CLOSING_PARENTHESIS_HYPERLINK_PATTERN, "$0").unwrap(),
+                Rule::new(GENERIC_HYPERLINK_PATTERN, "$0").unwrap(),
+            ];
+
+            assert_eq!(
+                Rule::match_hyperlinks(test_uri, &rules)[0].link.uri,
+                expected_uri,
+                "{}",
+                msg,
+            );
+        }
+
+        assert_helper(
+            "   http://example.com)",
+            "http://example.com",
+            "Unblanced terminating parenthesis should not be captured.",
+        );
+
+        assert_helper(
+            "http://example.com/(complete_parentheses)",
+            "http://example.com/(complete_parentheses)",
+            "Balanced terminating parenthesis should be captureed.",
+        );
+
+        assert_helper(
+            "http://example.com/(complete_parentheses)>",
+            "http://example.com/(complete_parentheses)",
+            "Non-URL characters after a balanced terminating parenthesis should be dropped.",
+        );
+
+        assert_helper(
+            "http://example.com/(complete_parentheses))",
+            "http://example.com/(complete_parentheses))",
+            "Non-terminating parentheses should not impact matching the entire URL - Terminated with )",
+        );
+
+        assert_helper(
+            "http://example.com/(complete_parentheses)-((-)-()-_-",
+            "http://example.com/(complete_parentheses)-((-)-()-_-",
+            "Non-terminating parentheses should not impact matching the entire URL - Terminated with a valid character",
         );
     }
 }

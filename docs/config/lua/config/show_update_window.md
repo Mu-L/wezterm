@@ -1,3 +1,7 @@
+---
+tags:
+  - updates
+---
 # `show_update_window`
 
 When Wezterm checks for an update and detects a new version, this
@@ -10,3 +14,7 @@ the automatic update checks.
 ```lua
 config.show_update_window = false
 ```
+
+{{since('nightly')}}
+
+This option no longer has any effect and will be removed in a future release.

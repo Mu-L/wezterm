@@ -1,6 +1,11 @@
+---
+tags:
+  - font
+  - appearance
+---
 # `display_pixel_geometry = "RGB"`
 
-{{since('nightly')}}
+{{since('20230408-112425-69ae8472')}}
 
 Configures whether subpixel anti-aliasing should produce either `"RGB"` or
 `"BGR"` ordered output.

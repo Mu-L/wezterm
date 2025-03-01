@@ -5,6 +5,7 @@ fn new_build() -> cc::Build {
     let mut cfg = cc::Build::new();
     cfg.warnings(false);
     cfg.flag_if_supported("-fno-stack-check");
+    cfg.flag_if_supported("-Wno-deprecated-non-prototype");
     cfg
 }
 
@@ -92,6 +93,9 @@ fn libpng() {
     cfg.define("HAVE_STDINT_H", None);
     cfg.define("HAVE_STDDEF_H", None);
     let target = env::var("TARGET").unwrap();
+    if target.contains("powerpc64") {
+        cfg.define("PNG_POWERPC_VSX_OPT", Some("0"));
+    }
     if !target.contains("windows") {
         cfg.define("_LARGEFILE64_SOURCE", Some("1"));
     }
@@ -198,6 +202,7 @@ fn freetype() {
         "sdf/ftsdfrend.c",
         "sfnt/sfnt.c",
         "smooth/smooth.c",
+        "svg/ftsvg.c",
         "truetype/truetype.c",
         "type1/type1.c",
         "type42/type42.c",
@@ -238,5 +243,5 @@ fn main() {
     freetype();
     let out_dir = env::var("OUT_DIR").unwrap();
     println!("cargo:outdir={}", out_dir);
-    println!("cargo:rustc-env=MACOSX_DEPLOYMENT_TARGET=10.9");
+    println!("cargo:rustc-env=MACOSX_DEPLOYMENT_TARGET=10.12");
 }

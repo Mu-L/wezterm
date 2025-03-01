@@ -1,6 +1,10 @@
+---
+tags:
+  - tuning
+---
 # `ulimit_nofile = 2048`
 
-{{since('nightly')}}
+{{since('20230408-112425-69ae8472')}}
 
 On Unix systems, specifies the minimum desirable value for the `RLIMIT_NOFILE`
 *soft limit*.

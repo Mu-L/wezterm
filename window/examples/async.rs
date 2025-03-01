@@ -80,12 +80,16 @@ impl MyWindow {
             }
             WindowEvent::AppearanceChanged(_)
             | WindowEvent::AdviseDeadKeyStatus(_)
+            | WindowEvent::AdviseModifiersLedStatus(_, _)
             | WindowEvent::Notification(_)
             | WindowEvent::FocusChanged(_)
             | WindowEvent::DraggedFile(_)
             | WindowEvent::DroppedFile(_)
+            | WindowEvent::DroppedUrl(_)
+            | WindowEvent::DroppedString(_)
             | WindowEvent::PerformKeyAssignment(_)
-            | WindowEvent::MouseLeave => {}
+            | WindowEvent::MouseLeave
+            | WindowEvent::SetInnerSizeCompleted => {}
         }
     }
 }

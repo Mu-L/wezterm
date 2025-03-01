@@ -161,8 +161,8 @@ mod win {
             let mut saved_output = 0;
             let saved_cp;
             unsafe {
-                GetConsoleMode(read.as_raw_file_descriptor(), &mut saved_input);
-                GetConsoleMode(write.as_raw_file_descriptor(), &mut saved_output);
+                GetConsoleMode(read.as_raw_file_descriptor() as *mut _, &mut saved_input);
+                GetConsoleMode(write.as_raw_file_descriptor() as *mut _, &mut saved_output);
                 saved_cp = GetConsoleOutputCP();
                 SetConsoleOutputCP(CP_UTF8);
             }
@@ -179,8 +179,8 @@ mod win {
         pub fn set_cooked(&mut self) -> anyhow::Result<()> {
             unsafe {
                 SetConsoleOutputCP(self.saved_cp);
-                SetConsoleMode(self.read.as_raw_handle(), self.saved_input);
-                SetConsoleMode(self.write.as_raw_handle(), self.saved_output);
+                SetConsoleMode(self.read.as_raw_handle() as *mut _, self.saved_input);
+                SetConsoleMode(self.write.as_raw_handle() as *mut _, self.saved_output);
             }
             Ok(())
         }
@@ -188,11 +188,11 @@ mod win {
         pub fn set_raw(&mut self) -> anyhow::Result<()> {
             unsafe {
                 SetConsoleMode(
-                    self.read.as_raw_file_descriptor(),
+                    self.read.as_raw_file_descriptor() as *mut _,
                     ENABLE_VIRTUAL_TERMINAL_INPUT,
                 );
                 SetConsoleMode(
-                    self.write.as_raw_file_descriptor(),
+                    self.write.as_raw_file_descriptor() as *mut _,
                     ENABLE_PROCESSED_OUTPUT
                         | ENABLE_WRAP_AT_EOL_OUTPUT
                         | ENABLE_VIRTUAL_TERMINAL_PROCESSING
@@ -337,6 +337,18 @@ enum Message {
 
 #[derive(Debug, Parser, Clone)]
 pub struct RecordCommand {
+    /// Start in the specified directory, instead of
+    /// the default_cwd defined by your wezterm configuration
+    #[arg(long)]
+    cwd: Option<std::path::PathBuf>,
+
+    /// Save asciicast to the specified file, instead of
+    /// using a random file name in the temp directory
+    #[arg(short)]
+    outfile: Option<std::path::PathBuf>,
+
+    /// Start prog instead of the default_prog defined by your
+    /// wezterm configuration
     #[arg(value_parser)]
     prog: Vec<OsString>,
 }
@@ -350,12 +362,24 @@ impl RecordCommand {
 
         let header = Header::new(&config, size, &prog);
 
-        let (cast_file, cast_file_name) = tempfile::Builder::new()
-            .prefix("wezterm-recording-")
-            // We use a .txt suffix for convenice when uploading to GH
-            .suffix(".cast.txt")
-            .tempfile()?
-            .keep()?;
+        let (cast_file, cast_file_name) = match self.outfile.as_ref() {
+            Some(outfile) => (
+                std::fs::File::options()
+                    .write(true)
+                    .truncate(true)
+                    .create(true)
+                    .open(outfile)?,
+                outfile.clone(),
+            ),
+            None => {
+                tempfile::Builder::new()
+                    .prefix("wezterm-recording-")
+                    // We use a .txt suffix for convenice when uploading to GH
+                    .suffix(".cast.txt")
+                    .tempfile()?
+                    .keep()?
+            }
+        };
         let mut cast_file = BufWriter::new(cast_file);
         writeln!(cast_file, "{}", serde_json::to_string(&header)?)?;
 
@@ -369,7 +393,7 @@ impl RecordCommand {
                 Some(prog)
             },
             config.default_prog.as_ref(),
-            config.default_cwd.as_ref(),
+            self.cwd.as_ref().or(config.default_cwd.as_ref()),
         )?;
 
         let mut child = pair.slave.spawn_command(cmd)?;
@@ -481,6 +505,14 @@ pub struct PlayCommand {
     #[arg(long)]
     explain: bool,
 
+    /// Don't replay, just show the explanation
+    #[arg(long, conflicts_with = "explain")]
+    explain_only: bool,
+
+    /// Just emit raw escape sequences all at once, with no timing information
+    #[arg(long, conflicts_with = "explain")]
+    cat: bool,
+
     cast_file: PathBuf,
 }
 
@@ -497,116 +529,144 @@ impl PlayCommand {
 
         let header: Header = serde_json::from_str(&header_line).context("parsing Header")?;
 
-        let mut tty = Tty::new()?;
-        let size = tty.get_size()?;
-        if u32::from(size.cols) < header.width || u32::from(size.rows) < header.height {
-            anyhow::bail!(
-                "{} was recorded with width={} and height={}
-                 but the current screen dimensions {}x{} are
-                 too small to display it",
-                self.cast_file.display(),
-                header.width,
-                header.height,
-                size.cols,
-                size.rows
-            );
-        }
-
-        tty.set_raw()?;
-        let (tx, rx) = channel();
-
-        {
-            let mut stdin = tty.reader()?;
-            let tx = tx;
-            std::thread::spawn(move || -> anyhow::Result<()> {
-                let mut buf = [0u8; 8192];
-                loop {
-                    let size = stdin.read(&mut buf)?;
-                    if size == 0 {
-                        break;
-                    }
-                    tx.send(Message::Stdin(buf[0..size].to_vec()))?;
+        if self.cat {
+            for line in cast_file.lines() {
+                let line = line?;
+                let event: Event = serde_json::from_str(&line)?;
+                if event.1 != "o" {
+                    continue;
                 }
-                Ok(())
-            });
+                std::io::stdout().write_all(&event.2.as_bytes())?;
+            }
+
+            return Ok(());
         }
 
-        let start = Instant::now();
-
+        let (tx, rx) = channel();
         let mut sent_parser = TWParser::new();
         let mut sent_actions = vec![];
 
-        for line in cast_file.lines() {
-            let line = line?;
-            let event: Event = serde_json::from_str(&line)?;
-            if event.1 != "o" {
-                continue;
-            }
-            let target = start + Duration::from_secs_f32(event.0);
-            let duration = target.saturating_duration_since(Instant::now());
-            std::thread::sleep(duration);
-
-            tty.write_all(&event.2.as_bytes())?;
-            sent_parser.parse(&event.2.as_bytes(), |act| sent_actions.push(act));
-        }
-
-        std::thread::sleep(Duration::from_millis(100));
-
-        tty.set_cooked()?;
-
-        #[derive(Debug)]
-        enum Summarized {
-            Action(Action),
-            Print(String),
-        }
-
-        fn summarize(actions: Vec<Action>) -> Vec<Summarized> {
-            let mut print = String::new();
-            let mut res = vec![];
-            for act in actions {
-                match act {
-                    Action::Print(c) => print.push(c),
-                    act => {
-                        if !print.is_empty() {
-                            res.push(Summarized::Print(print.to_string()));
-                            print.clear();
-                        }
-                        res.push(Summarized::Action(act));
-                    }
+        if self.explain_only {
+            for line in cast_file.lines() {
+                let line = line?;
+                let event: Event = serde_json::from_str(&line)?;
+                if event.1 != "o" {
+                    continue;
                 }
+                sent_parser.parse(&event.2.as_bytes(), |act| sent_actions.push(act));
             }
-            if !print.is_empty() {
-                res.push(Summarized::Print(print.to_string()));
+            drop(tx);
+        } else {
+            let mut tty = Tty::new()?;
+            let size = tty.get_size()?;
+            if u32::from(size.cols) < header.width || u32::from(size.rows) < header.height {
+                anyhow::bail!(
+                    "{} was recorded with width={} and height={}
+                     but the current screen dimensions {}x{} are
+                     too small to display it",
+                    self.cast_file.display(),
+                    header.width,
+                    header.height,
+                    size.cols,
+                    size.rows
+                );
             }
-            res
+
+            tty.set_raw()?;
+
+            {
+                let mut stdin = tty.reader()?;
+                let tx = tx;
+                std::thread::spawn(move || -> anyhow::Result<()> {
+                    let mut buf = [0u8; 8192];
+                    loop {
+                        let size = stdin.read(&mut buf)?;
+                        if size == 0 {
+                            break;
+                        }
+                        tx.send(Message::Stdin(buf[0..size].to_vec()))?;
+                    }
+                    Ok(())
+                });
+            }
+
+            let start = Instant::now();
+
+            for line in cast_file.lines() {
+                let line = line?;
+                let event: Event = serde_json::from_str(&line)?;
+                if event.1 != "o" {
+                    continue;
+                }
+                let target = start + Duration::from_secs_f32(event.0);
+                let duration = target.saturating_duration_since(Instant::now());
+                std::thread::sleep(duration);
+
+                tty.write_all(&event.2.as_bytes())?;
+                sent_parser.parse(&event.2.as_bytes(), |act| sent_actions.push(act));
+            }
+
+            std::thread::sleep(Duration::from_millis(100));
+
+            tty.set_cooked()?;
         }
 
-        if self.explain {
+        if self.explain || self.explain_only {
             println!("> SENT");
             for s in summarize(sent_actions) {
                 println!("\t{:?}", s);
             }
         }
 
-        if self.explain {
-            println!("< RECV");
-        }
-        let mut parser = TWParser::new();
-        while let Ok(msg) = rx.try_recv() {
-            match msg {
-                Message::Stdin(data) => {
-                    if self.explain {
-                        let answer_back = String::from_utf8_lossy(&data);
-                        println!("\t{:?}", answer_back);
-                        parser.parse(&data, |action| {
-                            println!("\t{:?}", action);
-                        });
+        if !self.explain_only {
+            if self.explain {
+                println!("< RECV");
+            }
+            let mut parser = TWParser::new();
+            while let Ok(msg) = rx.try_recv() {
+                match msg {
+                    Message::Stdin(data) => {
+                        if self.explain {
+                            let answer_back = String::from_utf8_lossy(&data);
+                            println!("\t{:?}", answer_back);
+                            parser.parse(&data, |action| {
+                                println!("\t{:?}", action);
+                            });
+                        }
                     }
+                    _ => unreachable!(),
                 }
-                _ => unreachable!(),
             }
         }
 
         Ok(())
     }
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+enum Summarized {
+    Action(Action),
+    Print(String),
+}
+
+fn summarize(actions: Vec<Action>) -> Vec<Summarized> {
+    let mut print = String::new();
+    let mut res = vec![];
+    for act in actions {
+        match act {
+            Action::Print(c) => print.push(c),
+            act => {
+                if !print.is_empty() {
+                    res.push(Summarized::Print(print.escape_default().to_string()));
+                    print.clear();
+                }
+                res.push(Summarized::Action(act));
+            }
+        }
+    }
+    if !print.is_empty() {
+        res.push(Summarized::Print(print.escape_default().to_string()));
+    }
+    res
 }

@@ -1,3 +1,7 @@
+---
+tags:
+  - hyperlink
+---
 # `hyperlink_rules`
 
 Defines rules to match text from the terminal output and generate
@@ -21,6 +25,14 @@ The value is a list of rule entries. Each entry has the following fields:
       a number that corresponds to a capture group in the regex.  The default
       is `0`, highlighting the entire region of text matched by the regex.  `1`
       would be the first capture group, and so on.
+
+{{since('20230408-112425-69ae8472', outline=True)}}
+    The regex syntax now supports backreferences and look around assertions.
+    See [Fancy Regex Syntax](https://docs.rs/fancy-regex/latest/fancy_regex/#syntax)
+    for the extended syntax, which builds atop the underlying
+    [Regex syntax](https://docs.rs/regex/latest/regex/#syntax).
+    In prior versions, only the base
+    [Regex syntax](https://docs.rs/regex/latest/regex/#syntax) was supported.
 
 Assigning `hyperlink_rules` overrides the built-in default rules.
 
@@ -98,7 +110,7 @@ table.insert(config.hyperlink_rules, {
 })
 
 -- make username/project paths clickable. this implies paths like the following are for github.
--- ( "nvim-treesitter/nvim-treesitter" | wbthomason/packer.nvim | wez/wezterm | "wez/wezterm.git" )
+-- ( "nvim-treesitter/nvim-treesitter" | wbthomason/packer.nvim | wezterm/wezterm | "wezterm/wezterm.git" )
 -- as long as a full url hyperlink regex exists above this it should not match a full url to
 -- github or gitlab / bitbucket (i.e. https://gitlab.com/user/project.git is still a whole clickable url)
 table.insert(config.hyperlink_rules, {

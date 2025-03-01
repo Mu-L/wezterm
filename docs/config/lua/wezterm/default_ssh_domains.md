@@ -1,6 +1,13 @@
+---
+title: wezterm.default_ssh_domains
+tags:
+ - ssh
+ - multiplexing
+---
+
 # wezterm.default_ssh_domains()
 
-{{since('nightly')}}
+{{since('20230408-112425-69ae8472')}}
 
 Computes a list of [SshDomain](../SshDomain.md) objects based on
 the set of hosts discovered in your `~/.ssh/config`.
